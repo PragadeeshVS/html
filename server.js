@@ -1,8 +1,3 @@
-/**
- * Mini SOC Backend — Node.js + Express (FIXED VERSION)
- * Snort multi-line parser + real-time tail + firewall control
- */
-
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
@@ -30,28 +25,29 @@ let stats = {
   sql_inject: 0,
 };
 
-// ── MULTI-LINE SNORT PARSER (FIXED) ─────────────────────
-function parseSnortBlock(block) {
-  const header = block.match(/\[\*\*\]\s+\[(\d+:\d+:\d+)\]\s+(.+?)\s+\[\*\*\]/);
-  if (!header) return null;
-
-  const sid = header[1];
-  const ruleName = header[2];
-
-  const ipLine = block.match(
-    /(\d{2}\/\d{2}-\d{2}:\d{2}:\d{2}\.\d+)\s+([\d.]+)(?::\d+)?\s+->\s+([\d.]+)/
+// ── FAST MODE PARSER (FIXED) ────────────────────────────
+function parseSnortFastLine(line) {
+  const match = line.match(
+    /(\d{2}\/\d{2}-\d{2}:\d{2}:\d{2}\.\d+)\s+\[\*\*\]\s+\[(\d+:\d+:\d+)\]\s+(.+?)\s+\[\*\*\]\s+\[Priority:\s*(\d)\]\s+\{(\w+)\}\s+([\d.]+)\s+->\s+([\d.]+)/
   );
-  if (!ipLine) return null;
 
-  const srcIp = ipLine[2];
-  const dstIp = ipLine[3];
+  if (!match) return null;
 
-  const priorityMatch = block.match(/Priority:\s*(\d)/);
-  const priority = priorityMatch ? parseInt(priorityMatch[1]) : 2;
+  const [
+    _,
+    time,
+    sid,
+    ruleName,
+    priority,
+    protocol,
+    srcIp,
+    dstIp
+  ] = match;
 
   const severity =
-    priority === 1 ? "High" :
-    priority === 2 ? "Medium" : "Low";
+    priority == 0 ? "Low" :
+    priority == 1 ? "High" :
+    "Medium";
 
   let attackType = "unknown";
   const rn = ruleName.toLowerCase();
@@ -67,11 +63,12 @@ function parseSnortBlock(block) {
     timestamp: new Date().toISOString(),
     srcIp,
     dstIp,
+    protocol,
     attackType,
     severity,
     ruleName,
     sid,
-    raw: block,
+    raw: line,
   };
 }
 
@@ -79,12 +76,10 @@ function parseSnortBlock(block) {
 function loadExistingAlerts() {
   if (!fs.existsSync(SNORT_LOG)) return;
 
-  const content = fs.readFileSync(SNORT_LOG, "utf-8");
+  const lines = fs.readFileSync(SNORT_LOG, "utf-8").split("\n");
 
-  const blocks = content.split(/\[\*\*\]/).slice(1).map(b => "[**]" + b);
-
-  for (const block of blocks) {
-    const alert = parseSnortBlock(block);
+  for (const line of lines) {
+    const alert = parseSnortFastLine(line);
     if (alert) {
       alerts.push(alert);
       stats.total++;
@@ -97,7 +92,7 @@ function loadExistingAlerts() {
   console.log(`[IDS] Loaded ${alerts.length} alerts`);
 }
 
-// ── REAL-TIME LOG TAIL (FIXED) ───────────────────────────
+// ── REAL-TIME LOG TAIL (FAST MODE) ──────────────────────
 function tailSnortLog() {
   if (!fs.existsSync(SNORT_LOG)) {
     console.warn(`[IDS] Log not found at ${SNORT_LOG}`);
@@ -121,10 +116,10 @@ function tailSnortLog() {
     stream.on("data", chunk => buffer += chunk);
 
     stream.on("end", () => {
-      const blocks = buffer.split(/\[\*\*\]/).slice(1).map(b => "[**]" + b);
+      const lines = buffer.split("\n");
 
-      for (const block of blocks) {
-        const alert = parseSnortBlock(block);
+      for (const line of lines) {
+        const alert = parseSnortFastLine(line);
         if (alert) {
           alerts.unshift(alert);
           stats.total++;
@@ -142,7 +137,7 @@ function tailSnortLog() {
 
   }, LOG_POLL_INTERVAL);
 
-  console.log(`[IDS] Tailing Snort log: ${SNORT_LOG}`);
+  console.log(`[IDS] FAST mode parser active`);
 }
 
 // ── FIREWALL HELPERS ─────────────────────────────────────
